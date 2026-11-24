@@ -1,0 +1,17 @@
+{
+  "name": "stock-tycoon-server",
+  "version": "1.0.0",
+  "description": "월스트리트 시그널 - 3~35인 모의 주식 투자 & 업종·테마 분석 웹 보드게임",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.1",
+    "qrcode": "^1.5.4",
+    "socket.io": "^4.8.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

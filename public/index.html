@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>월스트리트 시그널 · 모의 주식 투자</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body { background-color: #070b14; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", sans-serif; }
+    .glass { background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); }
+    .tap-btn { transition: transform 0.1s ease, background-color 0.15s ease; }
+    .tap-btn:active { transform: scale(0.97); }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+  <!-- 상단 헤더 -->
+  <header class="glass sticky top-0 z-30 px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <span class="text-xl">📈</span>
+      <div>
+        <h1 class="font-bold text-sm sm:text-base tracking-tight text-emerald-400">월스트리트 시그널</h1>
+        <p id="headerStatus" class="text-[11px] text-slate-400">대기실</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <div id="timerBadge" class="hidden px-2.5 py-1 rounded-full bg-slate-800 border border-emerald-500/40 text-emerald-300 font-mono text-xs font-bold">00s</div>
+      <button onclick="openQrModal()" class="tap-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 border border-slate-700">📱 QR 초대</button>
+      <button id="hostAuthBtn" onclick="openHostModal()" class="tap-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-amber-300 border border-amber-500/30">🔐 방장</button>
+    </div>
+  </header>
+
+  <main class="flex-1 max-w-2xl w-full mx-auto p-4 space-y-4 pb-24">
+    <!-- 입장 화면 -->
+    <section id="joinSection" class="glass rounded-2xl p-6 mt-8 space-y-4">
+      <div class="text-center space-y-1">
+        <div class="text-4xl mb-2">📊</div>
+        <h2 class="text-xl font-bold text-white">모의 주식 시장에 입장하세요</h2>
+        <p class="text-xs text-slate-400">라운드별 업종·테마·실적·리스크 정보를 분석해 시드머니 100만 원을 불려보세요.</p>
+      </div>
+      <div class="space-y-3">
+        <input id="nicknameInput" type="text" maxlength="16" placeholder="닉네임 입력 (최대 16자)"
+          onkeydown="if(event.key==='Enter') joinGame()"
+          class="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 text-sm" />
+        <button onclick="joinGame()" class="tap-btn w-full py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/20">
+          입장하기
+        </button>
+        <p id="joinError" class="text-xs text-rose-400 text-center hidden"></p>
+      </div>
+    </section>
+
+    <!-- 내 자산 요약 바 -->
+    <section id="playerBar" class="hidden glass rounded-2xl p-3.5 grid grid-cols-3 gap-2 items-center">
+      <div>
+        <div id="myNickname" class="font-bold text-white text-sm truncate"></div>
+        <div class="text-[11px] text-slate-400">예수금: <span id="myCash" class="text-slate-200 font-mono">1,000,000원</span></div>
+      </div>
+      <div class="text-center">
+        <div class="text-[11px] text-slate-400">총 평가자산</div>
+        <div id="myTotalAsset" class="text-sm sm:text-base font-extrabold text-white font-mono">1,000,000원</div>
+      </div>
+      <div class="text-right">
+        <div class="text-[11px] text-slate-400">총 수익률</div>
+        <div id="myReturnPct" class="text-sm sm:text-base font-extrabold font-mono text-slate-300">0.0%</div>
+      </div>
+    </section>
+
+    <!-- 방장 컨트롤 패널 -->
+    <section id="hostControls" class="hidden glass rounded-2xl p-4 border-amber-500/40 space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-xs font-bold text-amber-400">👑 방장 제어 패널</span>
+        <div class="flex items-center gap-2">
+          <button onclick="toggleRankAmounts()" id="idxRankAmtBtn" class="tap-btn px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-300 border border-slate-700">💰 순위 금액 OFF</button>
+          <a href="/host" target="_blank" class="text-xs text-sky-400 underline">전광판 ↗</a>
+        </div>
+      </div>
+      <div id="hostLobbyControls" class="flex flex-wrap items-center gap-2">
+        <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-700">
+          <button onclick="selectRounds(8)" id="rBtn8" class="round-opt px-2.5 py-1 rounded text-xs font-bold text-slate-300">8R</button>
+          <button onclick="selectRounds(12)" id="rBtn12" class="round-opt px-2.5 py-1 rounded text-xs font-bold text-slate-300">12R</button>
+          <button onclick="selectRounds(16)" id="rBtn16" class="round-opt px-2.5 py-1 rounded text-xs font-bold text-slate-300">16R</button>
+          <button onclick="selectRounds(20)" id="rBtn20" class="round-opt px-2.5 py-1 rounded text-xs font-bold bg-emerald-500 text-slate-950">20R</button>
+        </div>
+        <button onclick="hostStartGame()" class="tap-btn flex-1 py-2 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs">장 개장 (게임 시작)</button>
+      </div>
+      <div id="hostActiveControls" class="hidden grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <button onclick="hostPauseResume()" id="pauseBtn" class="tap-btn py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold">⏸ 일시정지</button>
+        <button onclick="hostExtendTime()" class="tap-btn py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold">⏱ +30초</button>
+        <button onclick="hostNextPhase()" class="tap-btn py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-semibold">⏭ 다음 단계</button>
+        <button onclick="hostResetGame()" class="tap-btn py-2 rounded-xl bg-rose-600/80 hover:bg-rose-500 text-xs font-semibold">🔄 초기화</button>
+      </div>
+    </section>
+
+    <!-- 페이즈별 메인 컨텐츠 -->
+    <section id="phaseContent" class="hidden space-y-4"></section>
+
+    <!-- 체결 토스트 -->
+    <div id="tradeToast" class="hidden fixed bottom-20 left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-xl"></div>
+
+    <!-- 채팅 영역 -->
+    <section id="chatSection" class="hidden glass rounded-2xl p-3.5 space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-bold text-emerald-300">💬 투자자 라운지 채팅</span>
+        <span class="text-[11px] text-slate-500">실시간 소통</span>
+      </div>
+      <div id="chatMessages" class="h-32 overflow-y-auto space-y-1.5 text-xs pr-1"></div>
+      <div class="flex gap-2">
+        <input id="chatInput" type="text" maxlength="200" placeholder="시장 의견 나누기..."
+          onkeydown="if(event.key==='Enter') sendChat()"
+          class="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs focus:outline-none focus:border-emerald-400" />
+        <button onclick="sendChat()" class="tap-btn px-4 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold text-xs">전송</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- QR 초대 모달 -->
+  <div id="qrModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+    <div class="glass rounded-2xl p-6 max-w-xs w-full text-center space-y-4">
+      <h3 class="font-bold text-base text-white">📱 참가자 QR 초대</h3>
+      <img id="qrImg" src="" alt="QR Code" class="mx-auto w-52 h-52 rounded-xl bg-white p-2" />
+      <p id="qrUrlText" class="text-[11px] text-slate-400 break-all"></p>
+      <button onclick="closeQrModal()" class="tap-btn w-full py-2.5 rounded-xl bg-slate-800 text-white text-xs font-bold">닫기</button>
+    </div>
+  </div>
+
+  <!-- 방장 PIN 인증 모달 -->
+  <div id="hostModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+    <div class="glass rounded-2xl p-6 max-w-xs w-full space-y-4">
+      <h3 class="font-bold text-base text-white text-center">🔐 방장 인증</h3>
+      <input id="pinInput" type="password" inputmode="numeric" maxlength="8" placeholder="관리자 PIN 입력"
+        onkeydown="if(event.key==='Enter') submitHostPin()"
+        class="w-full px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 text-center text-white tracking-widest focus:outline-none focus:border-amber-400" />
+      <p id="pinError" class="text-xs text-rose-400 text-center hidden"></p>
+      <div class="flex gap-2">
+        <button onclick="closeHostModal()" class="tap-btn flex-1 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold">취소</button>
+        <button onclick="submitHostPin()" class="tap-btn flex-1 py-2.5 rounded-xl bg-amber-500 text-slate-950 text-xs font-bold">확인</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io();
+    let myToken = localStorage.getItem('st_player_token') || null;
+    let hostToken = localStorage.getItem('st_host_token') || null;
+    let isHost = false;
+    let showRankAmounts = false;
+    let selectedRounds = 20;
+    let latestState = null;
+    let lastRenderedPhaseKey = null;
+
+    let selectedStockCode = 'SEMI';
+    let orderQty = 5;
+    let chatLogs = [];
+
+    window.addEventListener('DOMContentLoaded', () => {
+      if (hostToken) {
+        socket.emit('host:auth', { hostToken }, (res) => {
+          if (res?.ok) applyHostState();
+          else localStorage.removeItem('st_host_token');
+        });
+      }
+      if (myToken) {
+        socket.emit('player:join', { token: myToken }, (res) => {
+          if (res?.ok) onJoinedSuccess(res);
+          else {
+            localStorage.removeItem('st_player_token');
+            myToken = null;
+          }
+        });
+      }
+    });
+
+    function joinGame() {
+      const nickname = document.getElementById('nicknameInput').value.trim();
+      const errEl = document.getElementById('joinError');
+      errEl.classList.add('hidden');
+      socket.emit('player:join', { nickname, token: myToken }, (res) => {
+        if (!res?.ok) {
+          errEl.textContent = res?.error || '입장에 실패했습니다.';
+          errEl.classList.remove('hidden');
+          return;
+        }
+        localStorage.setItem('st_player_token', res.token);
+        myToken = res.token;
+        onJoinedSuccess(res);
+      });
+    }
+
+    function onJoinedSuccess(res) {
+      document.getElementById('joinSection').classList.add('hidden');
+      document.getElementById('playerBar').classList.remove('hidden');
+      document.getElementById('phaseContent').classList.remove('hidden');
+      document.getElementById('chatSection').classList.remove('hidden');
+      chatLogs = res.chatHistory || [];
+      renderChat();
+      socket.emit('game:request_state');
+    }
+
+    // 방장 인증
+    function openHostModal() { document.getElementById('hostModal').classList.remove('hidden'); }
+    function closeHostModal() { document.getElementById('hostModal').classList.add('hidden'); }
+    function submitHostPin() {
+      const pin = document.getElementById('pinInput').value;
+      const errEl = document.getElementById('pinError');
+      errEl.classList.add('hidden');
+      socket.emit('host:auth', { pin }, (res) => {
+        if (!res?.ok) {
+          errEl.textContent = res?.error || '인증 실패';
+          errEl.classList.remove('hidden');
+          return;
+        }
+        localStorage.setItem('st_host_token', res.hostToken);
+        hostToken = res.hostToken;
+        applyHostState();
+        closeHostModal();
+      });
+    }
+    function toggleRankAmounts() {
+      showRankAmounts = !showRankAmounts;
+      const btn = document.getElementById('idxRankAmtBtn');
+      if (btn) {
+        btn.textContent = showRankAmounts ? '💰 순위 금액 ON' : '💰 순위 금액 OFF';
+        btn.className = showRankAmounts
+          ? 'tap-btn px-2.5 py-1 rounded-lg bg-amber-500/20 text-[11px] font-bold text-amber-300 border border-amber-400/50'
+          : 'tap-btn px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-300 border border-slate-700';
+      }
+      if (latestState) {
+        const me = latestState.players.find((p) => p.token === myToken);
+        if (me) renderPhaseMain(latestState, me);
+      }
+    }
+
+    function applyHostState() {
+      isHost = true;
+      document.getElementById('hostAuthBtn').textContent = '👑 방장됨';
+      document.getElementById('hostControls').classList.remove('hidden');
+      lastRenderedPhaseKey = null;
+      if (latestState) renderState(latestState);
+    }
+
+    // QR 모달
+    async function openQrModal() {
+      const modal = document.getElementById('qrModal');
+      const targetUrl = `${window.location.origin}/`;
+      document.getElementById('qrUrlText').textContent = targetUrl;
+      const res = await fetch(`/api/qr?url=${encodeURIComponent(targetUrl)}`);
+      const data = await res.json();
+      document.getElementById('qrImg').src = data.dataUrl;
+      modal.classList.remove('hidden');
+    }
+    function closeQrModal() { document.getElementById('qrModal').classList.add('hidden'); }
+
+    // 방장 제어
+    function selectRounds(n) {
+      selectedRounds = n;
+      [8, 12, 16, 20].forEach((r) => {
+        const btn = document.getElementById(`rBtn${r}`);
+        btn.className = r === n
+          ? 'round-opt px-2.5 py-1 rounded text-xs font-bold bg-emerald-500 text-slate-950'
+          : 'round-opt px-2.5 py-1 rounded text-xs font-bold text-slate-300';
+      });
+    }
+    function hostStartGame() {
+      socket.emit('host:start_game', { totalRounds: selectedRounds }, (res) => {
+        if (!res?.ok) alert(res?.error || '시작할 수 없습니다.');
+      });
+    }
+    function hostPauseResume() { socket.emit('host:pause_resume'); }
+    function hostExtendTime() { socket.emit('host:extend_time', { seconds: 30 }); }
+    function hostNextPhase() { socket.emit('host:next_phase'); }
+    function hostKick(token) { socket.emit('host:kick_player', { targetToken: token }); }
+    function hostResetGame() {
+      if (confirm('게임을 초기화하고 대기실로 돌아갈까요?')) socket.emit('host:reset_game');
+    }
+
+    socket.on('game:tick', ({ timer, paused }) => {
+      const badge = document.getElementById('timerBadge');
+      badge.classList.remove('hidden');
+      badge.textContent = paused ? `⏸ ${timer}s` : `${timer}s`;
+    });
+
+    socket.on('player:kicked', () => {
+      localStorage.removeItem('st_player_token');
+      alert('방장에 의해 퇴장되었습니다.');
+      window.location.reload();
+    });
+
+    socket.on('chat:message', (msg) => {
+      chatLogs.push(msg);
+      renderChat();
+    });
+
+    socket.on('game:state', (st) => {
+      latestState = st;
+      renderState(st);
+    });
+
+    function showToast(msg, isError = false) {
+      const el = document.getElementById('tradeToast');
+      el.textContent = msg;
+      el.className = `fixed bottom-20 left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 rounded-xl text-white text-xs font-bold shadow-xl ${isError ? 'bg-rose-600' : 'bg-emerald-600'}`;
+      el.classList.remove('hidden');
+      setTimeout(() => el.classList.add('hidden'), 2200);
+    }
+
+    function renderState(st) {
+      const me = st.players.find((p) => p.token === myToken);
+      const phaseLabels = {
+        LOBBY: '대기실',
+        TRADING: `${st.round}/${st.totalRounds}R · 정보 분석 및 매매`,
+        MARKET_CLOSE: `${st.round}/${st.totalRounds}R · 장 마감 정산`,
+        GAME_OVER: '최종 개인 순위 발표',
+      };
+      document.getElementById('headerStatus').textContent = phaseLabels[st.phase] || st.phase;
+
+      const timerBadge = document.getElementById('timerBadge');
+      if (st.phase === 'LOBBY' || st.phase === 'GAME_OVER') {
+        timerBadge.classList.add('hidden');
+      } else {
+        timerBadge.classList.remove('hidden');
+        timerBadge.textContent = st.paused ? `⏸ ${st.timer}s` : `${st.timer}s`;
+      }
+
+      if (isHost) {
+        document.getElementById('hostLobbyControls').classList.toggle('hidden', st.phase !== 'LOBBY');
+        document.getElementById('hostActiveControls').classList.toggle('hidden', st.phase === 'LOBBY');
+        const pauseBtn = document.getElementById('pauseBtn');
+        if (pauseBtn) pauseBtn.textContent = st.paused ? '▶ 재개' : '⏸ 일시정지';
+      }
+
+      if (!me) return;
+
+      document.getElementById('myNickname').textContent = me.nickname;
+      document.getElementById('myCash').textContent = `${me.cash.toLocaleString()}원`;
+      document.getElementById('myTotalAsset').textContent = `${me.totalAsset.toLocaleString()}원`;
+      const retEl = document.getElementById('myReturnPct');
+      const sign = me.returnPct > 0 ? '+' : '';
+      retEl.textContent = `${sign}${me.returnPct}%`;
+      retEl.className = `text-sm sm:text-base font-extrabold font-mono ${me.returnPct > 0 ? 'text-rose-400' : me.returnPct < 0 ? 'text-sky-400' : 'text-slate-300'}`;
+
+      const phaseKey = `${st.phase}_${st.round}_${st.phaseNonce}`;
+      if (lastRenderedPhaseKey !== phaseKey) {
+        lastRenderedPhaseKey = phaseKey;
+        renderPhaseMain(st, me);
+      } else if (st.phase === 'LOBBY') {
+        renderPhaseMain(st, me);
+      } else if (st.phase === 'TRADING') {
+        // 선택 중인 종목/수량은 유지하면서 보유 수량만 갱신
+        updateHoldingBadges(st, me);
+      }
+    }
+
+    function updateHoldingBadges(st, me) {
+      st.stocks.forEach((s) => {
+        const el = document.getElementById(`hold_${s.code}`);
+        if (el) {
+          const qty = me.holdings[s.code]?.qty || 0;
+          el.textContent = qty > 0 ? `보유 ${qty}주` : '미보유';
+        }
+      });
+      const activePos = me.holdings[selectedStockCode] || { qty: 0, avgCost: 0 };
+      const detailEl = document.getElementById('selectedStockHolding');
+      if (detailEl) {
+        detailEl.textContent = activePos.qty > 0
+          ? `내 보유: ${activePos.qty}주 (평단 ${activePos.avgCost.toLocaleString()}원)`
+          : '내 보유: 0주';
+      }
+    }
+
+    function renderPhaseMain(st, me) {
+      const box = document.getElementById('phaseContent');
+      if (st.phase === 'LOBBY') {
+        box.innerHTML = `
+          <div class="glass rounded-2xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="font-bold text-sm text-white">접속 중인 투자자 (${st.players.length}/35)</h3>
+              <span class="text-[11px] text-slate-400">1명 이상 시 시작 가능</span>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              ${st.players.map((p) => `
+                <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800/90 border border-slate-700 text-xs">
+                  <span class="w-2 h-2 rounded-full ${p.connected ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
+                  <span class="font-medium text-slate-100">${escapeHtml(p.nickname)}</span>
+                  ${isHost ? `<button onclick="hostKick('${p.token}')" class="ml-1 text-rose-400 hover:text-rose-300 font-bold">✕</button>` : ''}
+                </div>
+              `).join('')}
+            </div>
+            <div class="p-3 rounded-xl bg-slate-900/70 border border-slate-800 text-[11px] text-slate-400 space-y-1">
+              <p class="font-semibold text-emerald-300">📜 투자 가이드</p>
+              <p>• 매 라운드 <strong>업종 전망 · 매출 · 실적 · 리스크 · 테마주</strong> 브리핑이 공개됩니다.</p>
+              <p>• 브리핑을 해석해 유망 종목을 매수하고, 리스크 종목은 매도하세요.</p>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      if (st.phase === 'TRADING') {
+        renderTradingView(st, me);
+        return;
+      }
+
+      if (st.phase === 'MARKET_CLOSE') {
+        box.innerHTML = `
+          <div class="glass rounded-2xl p-4 space-y-3">
+            <h3 class="font-bold text-sm text-amber-400">🔔 ${st.round}라운드 장 마감 · 주가 변동 결과</h3>
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              ${st.stocks.map((s) => {
+                const up = s.pctChange > 0;
+                const down = s.pctChange < 0;
+                const badgeColor = up ? 'text-rose-400' : down ? 'text-sky-400' : 'text-slate-400';
+                const arrow = up ? '▲' : down ? '▼' : '-';
+                return `
+                  <div class="p-3 rounded-xl bg-slate-900/85 border border-slate-800 space-y-1">
+                    <div class="text-xs font-bold text-white">${s.emoji} ${s.name}</div>
+                    <div class="font-mono text-sm font-extrabold text-slate-100">${s.price.toLocaleString()}원</div>
+                    <div class="font-mono text-xs font-bold ${badgeColor}">${arrow} ${up ? '+' : ''}${s.pctChange}% </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+            <div class="space-y-1.5 pt-2 border-t border-slate-800">
+              ${st.roundSummaryLogs.map((l) => `
+                <div class="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs text-slate-200">${escapeHtml(l)}</div>
+              `).join('')}
+            </div>
+            <div class="pt-3 border-t border-slate-800 space-y-2">
+              <div class="flex items-center justify-between">
+                <h4 class="font-bold text-xs text-emerald-300">🏅 ${st.round}라운드 종료 중간 순위</h4>
+                <span class="text-[10px] text-slate-400">${isHost && showRankAmounts ? '방장 금액 공개 ON' : '자산 총액 비공개 · 순위만 공개'}</span>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                ${st.rankings.map((r) => {
+                  const isMe = r.token === myToken;
+                  const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `${r.rank}위`;
+                  const hasAmt = isHost && showRankAmounts && typeof r.totalAsset === 'number';
+                  const sign = r.returnPct > 0 ? '+' : '';
+                  const pctColor = r.returnPct > 0 ? 'text-rose-400' : r.returnPct < 0 ? 'text-sky-400' : 'text-slate-400';
+                  return `
+                    <div class="px-3 py-2 rounded-xl ${isMe ? 'bg-emerald-500/20 border-emerald-400' : 'bg-slate-900/80 border-slate-800'} border flex items-center justify-between gap-2 text-xs">
+                      <div class="flex items-center gap-2 min-w-0">
+                        <span class="font-extrabold w-7 text-center shrink-0">${medal}</span>
+                        <span class="font-bold text-white truncate">${escapeHtml(r.nickname)} ${isMe ? '<span class="text-[10px] text-emerald-400">(나)</span>' : ''}</span>
+                      </div>
+                      ${hasAmt ? `<div class="shrink-0 font-mono text-[11px]"><span class="font-bold text-amber-300">${r.totalAsset.toLocaleString()}원</span> <span class="${pctColor}">(${sign}${r.returnPct}%)</span></div>` : ''}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      if (st.phase === 'GAME_OVER') {
+        box.innerHTML = `
+          <div class="glass rounded-2xl p-4 space-y-3 border-emerald-500/40">
+            <div class="text-center space-y-1">
+              <div class="text-3xl">🏆</div>
+              <h3 class="font-bold text-lg text-emerald-400">최종 개인전 투자 랭킹</h3>
+              <p class="text-xs text-slate-400">초기 시드머니 1,000,000원 대비 최종 자산 및 수익률</p>
+            </div>
+            <div class="space-y-2">
+              ${st.rankings.map((r) => {
+                const isMe = r.token === myToken;
+                const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `${r.rank}위`;
+                const sign = r.returnPct > 0 ? '+' : '';
+                const pctColor = r.returnPct > 0 ? 'text-rose-400' : r.returnPct < 0 ? 'text-sky-400' : 'text-slate-400';
+                return `
+                  <div class="p-3 rounded-xl ${isMe ? 'bg-emerald-500/15 border-emerald-400' : 'bg-slate-900/80 border-slate-800'} border flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2.5">
+                      <span class="text-base font-extrabold w-8 text-center">${medal}</span>
+                      <div>
+                        <div class="font-bold text-sm text-white">${escapeHtml(r.nickname)} ${isMe ? '<span class="text-[11px] text-emerald-400">(나)</span>' : ''}</div>
+                        <div class="text-[11px] text-slate-400">현금 ${r.cash.toLocaleString()}원 · 주식 ${r.stockValue.toLocaleString()}원</div>
+                      </div>
+                    </div>
+                    <div class="text-right">
+                      <div class="font-mono font-extrabold text-white text-sm">${r.totalAsset.toLocaleString()}원</div>
+                      <div class="font-mono font-bold text-xs ${pctColor}">${sign}${r.returnPct}%</div>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    function renderTradingView(st, me) {
+      const box = document.getElementById('phaseContent');
+      const activeStock = st.stocks.find((s) => s.code === selectedStockCode) || st.stocks[0];
+      const activePos = me.holdings[activeStock.code] || { qty: 0, avgCost: 0 };
+
+      box.innerHTML = `
+        <div class="space-y-4">
+          <!-- 라운드 업종/테마 브리핑 -->
+          <div class="glass rounded-2xl p-4 space-y-2.5">
+            <h3 class="font-bold text-sm text-amber-300">📰 ${st.round}라운드 시장 브리핑 (8개 정보)</h3>
+            <div class="space-y-2">
+              ${st.briefings.map((b) => `
+                <div class="p-3 rounded-xl ${b.isHidden ? 'bg-purple-950/40 border-purple-500/50' : 'bg-slate-900/85 border-slate-800'} border space-y-1">
+                  <div class="font-bold text-xs sm:text-sm ${b.isHidden ? 'text-purple-300' : 'text-white'}">${escapeHtml(b.title)}</div>
+                  <p class="text-[11px] ${b.isHidden ? 'text-purple-200/80' : 'text-slate-300'} leading-relaxed">${escapeHtml(b.summary)}</p>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- 종목 선택 카드 -->
+          <div class="glass rounded-2xl p-4 space-y-3">
+            <h3 class="font-bold text-sm text-white">1️⃣ 거래할 종목 선택</h3>
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              ${st.stocks.map((s) => {
+                const isSelected = s.code === activeStock.code;
+                const qty = me.holdings[s.code]?.qty || 0;
+                const up = s.pctChange > 0;
+                const down = s.pctChange < 0;
+                return `
+                  <button onclick="pickStock('${s.code}')" class="tap-btn text-left p-2.5 rounded-xl border ${isSelected ? 'bg-emerald-500/20 border-emerald-400' : 'bg-slate-900/80 border-slate-700'}">
+                    <div class="flex justify-between items-center text-[11px]">
+                      <span class="text-slate-400">${s.sector}</span>
+                      <span class="font-mono font-bold ${up ? 'text-rose-400' : down ? 'text-sky-400' : 'text-slate-400'}">${up ? '+' : ''}${s.pctChange}%</span>
+                    </div>
+                    <div class="font-bold text-xs text-white mt-0.5">${s.emoji} ${s.name}</div>
+                    <div class="flex justify-between items-center mt-1">
+                      <span class="font-mono text-xs font-bold text-amber-300">${s.price.toLocaleString()}원</span>
+                      <span id="hold_${s.code}" class="text-[10px] text-emerald-300">${qty > 0 ? '보유 ' + qty + '주' : '미보유'}</span>
+                    </div>
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          </div>
+
+          <!-- 주문 패널 -->
+          <div class="glass rounded-2xl p-4 space-y-3 border-emerald-500/30">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="font-bold text-sm text-white">${activeStock.emoji} ${activeStock.name} (${activeStock.price.toLocaleString()}원)</div>
+                <div id="selectedStockHolding" class="text-[11px] text-emerald-300">
+                  ${activePos.qty > 0 ? `내 보유: ${activePos.qty}주 (평단 ${activePos.avgCost.toLocaleString()}원)` : '내 보유: 0주'}
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-[11px] text-slate-400">주문 수량</div>
+                <div class="font-mono font-extrabold text-lg text-amber-400">${orderQty}주</div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-5 gap-1.5">
+              <button onclick="setQty(1)" class="tap-btn py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold">1주</button>
+              <button onclick="setQty(5)" class="tap-btn py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold">5주</button>
+              <button onclick="setQty(10)" class="tap-btn py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold">10주</button>
+              <button onclick="setMaxBuyQty()" class="tap-btn py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-rose-300">최대매수</button>
+              <button onclick="setMaxSellQty()" class="tap-btn py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-sky-300">전량매도</button>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2.5">
+              <button onclick="submitTrade('BUY')" class="tap-btn py-3 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-extrabold text-sm">
+                매수하기 (${(orderQty * activeStock.price).toLocaleString()}원)
+              </button>
+              <button onclick="submitTrade('SELL')" class="tap-btn py-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-sm">
+                매도하기 (${(orderQty * activeStock.price).toLocaleString()}원)
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function pickStock(code) {
+      selectedStockCode = code;
+      const me = latestState?.players.find((p) => p.token === myToken);
+      if (latestState && me) renderTradingView(latestState, me);
+    }
+
+    function setQty(q) {
+      orderQty = q;
+      const me = latestState?.players.find((p) => p.token === myToken);
+      if (latestState && me) renderTradingView(latestState, me);
+    }
+
+    function setMaxBuyQty() {
+      const me = latestState?.players.find((p) => p.token === myToken);
+      const stock = latestState?.stocks.find((s) => s.code === selectedStockCode);
+      if (!me || !stock) return;
+      orderQty = Math.max(1, Math.floor(me.cash / stock.price));
+      renderTradingView(latestState, me);
+    }
+
+    function setMaxSellQty() {
+      const me = latestState?.players.find((p) => p.token === myToken);
+      if (!me) return;
+      orderQty = Math.max(1, me.holdings[selectedStockCode]?.qty || 1);
+      renderTradingView(latestState, me);
+    }
+
+    function submitTrade(side) {
+      socket.emit('trade:order', { code: selectedStockCode, side, qty: orderQty }, (res) => {
+        if (!res?.ok) {
+          showToast(res?.error || '주문 실패', true);
+          return;
+        }
+        showToast(res.message, false);
+      });
+    }
+
+    function sendChat() {
+      const input = document.getElementById('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+      socket.emit('chat:send', { text });
+      input.value = '';
+    }
+
+    function renderChat() {
+      const box = document.getElementById('chatMessages');
+      box.innerHTML = chatLogs.map((m) => `
+        <div class="leading-snug">
+          <span class="text-slate-500 text-[10px]">[${m.time}]</span>
+          <span class="font-bold text-emerald-300">${escapeHtml(m.sender)}:</span>
+          <span class="text-slate-200">${escapeHtml(m.text)}</span>
+        </div>
+      `).join('');
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>

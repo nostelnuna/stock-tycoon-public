@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>월스트리트 시그널 · 전광판</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body { background-color: #04070e; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", sans-serif; }
+    .panel { background: rgba(15, 23, 42, 0.9); border: 1px solid rgba(255, 255, 255, 0.08); }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+  <!-- PIN 잠금 오버레이 -->
+  <div id="pinOverlay" class="fixed inset-0 z-50 bg-slate-950/95 flex items-center justify-center p-6">
+    <div class="panel rounded-3xl p-8 max-w-sm w-full space-y-5 text-center shadow-2xl">
+      <div class="text-4xl">🔐</div>
+      <h1 class="text-xl font-bold text-emerald-400">전광판 관리자 인증</h1>
+      <input id="hostPinInput" type="password" inputmode="numeric" maxlength="8" placeholder="관리자 PIN 입력"
+        onkeydown="if(event.key==='Enter') authHost()"
+        class="w-full px-4 py-3.5 rounded-xl bg-slate-900 border border-slate-700 text-center text-lg tracking-widest text-white focus:outline-none focus:border-emerald-400" />
+      <p id="hostPinErr" class="text-xs text-rose-400 hidden"></p>
+      <button onclick="authHost()" class="w-full py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm">
+        전광판 잠금 해제
+      </button>
+    </div>
+  </div>
+
+  <!-- 전광판 상단 바 -->
+  <header class="panel px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <span class="text-3xl">📈</span>
+      <div>
+        <h1 class="text-2xl font-extrabold text-emerald-400 tracking-tight">월스트리트 시그널</h1>
+        <p id="hostPhaseLabel" class="text-sm text-slate-400">대기실 · 투자자 입장 중</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-4">
+      <div id="hostTimer" class="hidden px-5 py-2 rounded-2xl bg-slate-900 border border-emerald-500/50 text-emerald-300 font-mono text-3xl font-black">00s</div>
+      <button onclick="toggleRankAmounts()" id="rankAmtBtn" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 border border-slate-700">💰 순위 금액 OFF</button>
+      <button onclick="toggleTts()" id="ttsBtn" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-emerald-300 border border-emerald-500/30">🔊 음성 안내 ON</button>
+      <div id="hostToolbar" class="flex items-center gap-2"></div>
+    </div>
+  </header>
+
+  <main class="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 max-w-7xl w-full mx-auto">
+    <!-- 좌측 메인 보드 -->
+    <section id="boardMain" class="lg:col-span-8 space-y-6"></section>
+
+    <!-- 우측 사이드: QR & 실시간 참가자/자산 현황 -->
+    <aside class="lg:col-span-4 space-y-6">
+      <div class="panel rounded-3xl p-5 text-center space-y-3">
+        <h2 class="text-sm font-bold text-emerald-300">📱 스마트폰 QR 입장</h2>
+        <img id="hostQrImg" src="" alt="Join QR" class="mx-auto w-44 h-44 rounded-2xl bg-white p-2" />
+        <p id="hostQrUrl" class="text-xs text-slate-400 break-all"></p>
+      </div>
+
+      <div class="panel rounded-3xl p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-white">투자자 현황 (<span id="playerCount">0</span>/35)</h2>
+          <span class="text-[11px] text-slate-400">✕ 클릭 시 강퇴</span>
+        </div>
+        <div id="hostPlayerList" class="space-y-2 max-h-[420px] overflow-y-auto pr-1"></div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const socket = io();
+    let hostToken = localStorage.getItem('st_host_token') || null;
+    let selectedRounds = 20;
+    let ttsEnabled = true;
+    let showRankAmounts = false;
+    let latestHostState = null;
+    let lastSpokenKey = null;
+
+    window.addEventListener('DOMContentLoaded', async () => {
+      const joinUrl = `${window.location.origin}/`;
+      document.getElementById('hostQrUrl').textContent = joinUrl;
+      const res = await fetch(`/api/qr?url=${encodeURIComponent(joinUrl)}`);
+      const data = await res.json();
+      document.getElementById('hostQrImg').src = data.dataUrl;
+
+      if (hostToken) {
+        socket.emit('host:auth', { hostToken }, (r) => {
+          if (r?.ok) unlockHost();
+          else localStorage.removeItem('st_host_token');
+        });
+      }
+    });
+
+    function authHost() {
+      const pin = document.getElementById('hostPinInput').value;
+      const err = document.getElementById('hostPinErr');
+      err.classList.add('hidden');
+      socket.emit('host:auth', { pin }, (res) => {
+        if (!res?.ok) {
+          err.textContent = res?.error || 'PIN이 일치하지 않습니다.';
+          err.classList.remove('hidden');
+          return;
+        }
+        localStorage.setItem('st_host_token', res.hostToken);
+        hostToken = res.hostToken;
+        unlockHost();
+      });
+    }
+
+    function unlockHost() {
+      document.getElementById('pinOverlay').classList.add('hidden');
+      socket.emit('game:request_state');
+    }
+
+    function toggleRankAmounts() {
+      showRankAmounts = !showRankAmounts;
+      const btn = document.getElementById('rankAmtBtn');
+      btn.textContent = showRankAmounts ? '💰 순위 금액 ON' : '💰 순위 금액 OFF';
+      btn.className = showRankAmounts
+        ? 'px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-xs font-bold text-amber-300 border border-amber-400/50'
+        : 'px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-300 border border-slate-700';
+      if (latestHostState) renderHostState(latestHostState);
+    }
+
+    function toggleTts() {
+      ttsEnabled = !ttsEnabled;
+      const btn = document.getElementById('ttsBtn');
+      btn.textContent = ttsEnabled ? '🔊 음성 안내 ON' : '🔇 음성 안내 OFF';
+      btn.className = ttsEnabled
+        ? 'px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-emerald-300 border border-emerald-500/30'
+        : 'px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-400 border border-slate-700';
+    }
+
+    function speakKorean(text) {
+      if (!ttsEnabled || !('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = 'ko-KR';
+      utter.rate = 1.05;
+      window.speechSynthesis.speak(utter);
+    }
+
+    socket.on('game:tick', ({ timer, paused }) => {
+      const el = document.getElementById('hostTimer');
+      el.classList.remove('hidden');
+      el.textContent = paused ? `⏸ ${timer}s` : `${timer}s`;
+    });
+
+    socket.on('game:state', (st) => {
+      latestHostState = st;
+      renderHostState(st);
+    });
+
+    function setRounds(n) { selectedRounds = n; socket.emit('game:request_state'); }
+    function startGame() {
+      socket.emit('host:start_game', { totalRounds: selectedRounds }, (r) => {
+        if (!r?.ok) alert(r?.error || '시작할 수 없습니다.');
+      });
+    }
+    function pauseResume() { socket.emit('host:pause_resume'); }
+    function extendTime() { socket.emit('host:extend_time', { seconds: 30 }); }
+    function nextPhase() { socket.emit('host:next_phase'); }
+    function kickPlayer(token) { socket.emit('host:kick_player', { targetToken: token }); }
+    function resetGame() {
+      if (confirm('게임을 초기화하고 대기실로 돌아갈까요?')) socket.emit('host:reset_game');
+    }
+
+    function renderHostState(st) {
+      const phaseNames = {
+        LOBBY: '대기실 · 투자자 입장 중',
+        TRADING: `${st.round}/${st.totalRounds} 라운드 · 시장 브리핑 및 매매 중`,
+        MARKET_CLOSE: `${st.round}/${st.totalRounds} 라운드 · 장 마감 주가 정산`,
+        GAME_OVER: '최종 개인전 투자 랭킹 발표',
+      };
+      document.getElementById('hostPhaseLabel').textContent = phaseNames[st.phase] || st.phase;
+
+      const timerEl = document.getElementById('hostTimer');
+      if (st.phase === 'LOBBY' || st.phase === 'GAME_OVER') {
+        timerEl.classList.add('hidden');
+      } else {
+        timerEl.classList.remove('hidden');
+        timerEl.textContent = st.paused ? `⏸ ${st.timer}s` : `${st.timer}s`;
+      }
+
+      const speakKey = `${st.phase}_${st.round}_${st.phaseNonce}`;
+      if (lastSpokenKey !== speakKey) {
+        lastSpokenKey = speakKey;
+        if (st.phase === 'TRADING') speakKorean(`${st.round}라운드 시장이 개장되었습니다. 업종과 테마 브리핑을 확인하고 매매하세요.`);
+        else if (st.phase === 'MARKET_CLOSE') speakKorean(`${st.round}라운드 장이 마감되었습니다. 주가 변동 결과를 확인하세요.`);
+        else if (st.phase === 'GAME_OVER') speakKorean(`모든 라운드가 종료되었습니다. 최종 개인전 투자 순위를 발표합니다.`);
+      }
+
+      const toolbar = document.getElementById('hostToolbar');
+      if (st.phase === 'LOBBY') {
+        toolbar.innerHTML = `
+          <div class="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-700">
+            ${[8, 12, 16, 20].map((r) => `
+              <button onclick="setRounds(${r})" class="px-3 py-1.5 rounded-lg text-xs font-bold ${selectedRounds === r ? 'bg-emerald-500 text-slate-950' : 'text-slate-300'}">${r}R</button>
+            `).join('')}
+          </div>
+          <button onclick="startGame()" class="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-sm">▶ 장 개장</button>
+        `;
+      } else {
+        toolbar.innerHTML = `
+          <button onclick="pauseResume()" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold">${st.paused ? '▶ 재개' : '⏸ 일시정지'}</button>
+          <button onclick="extendTime()" class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold">⏱ +30초</button>
+          <button onclick="nextPhase()" class="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-bold">⏭ 다음 단계</button>
+          <button onclick="resetGame()" class="px-3.5 py-2 rounded-xl bg-rose-600/80 hover:bg-rose-500 text-xs font-bold">🔄 초기화</button>
+        `;
+      }
+
+      // 우측 참가자 목록 (진행 중에는 자산 비공개, 최종 종료 시에만 공개)
+      const showAmounts = st.phase === 'GAME_OVER' || showRankAmounts;
+      const displayPlayers = showAmounts ? [...st.players].sort((a, b) => b.totalAsset - a.totalAsset) : st.players;
+      document.getElementById('playerCount').textContent = st.players.length;
+      document.getElementById('hostPlayerList').innerHTML = displayPlayers.map((p) => {
+        const sign = p.returnPct > 0 ? '+' : '';
+        const pctColor = p.returnPct > 0 ? 'text-rose-400' : p.returnPct < 0 ? 'text-sky-400' : 'text-slate-400';
+        return `
+          <div class="flex items-center justify-between px-3 py-2 rounded-xl bg-slate-900/90 border border-slate-800 text-xs">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full ${p.connected ? 'bg-emerald-400' : 'bg-rose-500'}"></span>
+              <span class="font-bold text-white">${escapeHtml(p.nickname)}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              ${showAmounts ? `<span class="font-mono text-slate-200 font-bold">${p.totalAsset.toLocaleString()}원</span><span class="font-mono font-bold ${pctColor}">(${sign}${p.returnPct}%)</span>` : ''}
+              <button onclick="kickPlayer('${p.token}')" class="text-rose-400 hover:text-rose-300 font-bold px-1">✕</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      const board = document.getElementById('boardMain');
+      if (st.phase === 'LOBBY') {
+        board.innerHTML = `
+          <div class="panel rounded-3xl p-8 space-y-6">
+            <h2 class="text-2xl font-extrabold text-white">📊 상장 종목 및 진행 안내</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3">
+              ${st.stocks.map((s) => `
+                <div class="p-4 rounded-2xl bg-slate-900/85 border border-slate-800 space-y-1.5">
+                  <div class="text-xs text-emerald-300 font-bold">${s.sector}</div>
+                  <div class="text-lg font-extrabold text-white">${s.emoji} ${s.name}</div>
+                  <div class="font-mono text-sm font-bold text-amber-300">${s.price.toLocaleString()}원</div>
+                  <p class="text-[11px] text-slate-400 leading-snug">${s.desc}</p>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      if (st.phase === 'GAME_OVER') {
+        board.innerHTML = `
+          <div class="panel rounded-3xl p-8 space-y-6 border-emerald-500/40">
+            <div class="text-center space-y-1">
+              <div class="text-5xl">🏆</div>
+              <h2 class="text-3xl font-black text-emerald-400">최종 개인전 투자 랭킹</h2>
+            </div>
+            <div class="space-y-3">
+              ${st.rankings.map((r) => {
+                const medal = r.rank === 1 ? '🥇 1위' : r.rank === 2 ? '🥈 2위' : r.rank === 3 ? '🥉 3위' : `${r.rank}위`;
+                const sign = r.returnPct > 0 ? '+' : '';
+                const pctColor = r.returnPct > 0 ? 'text-rose-400' : r.returnPct < 0 ? 'text-sky-400' : 'text-slate-400';
+                return `
+                  <div class="p-4 rounded-2xl ${r.rank === 1 ? 'bg-emerald-500/20 border-emerald-400' : 'bg-slate-900/80 border-slate-800'} border flex items-center justify-between">
+                    <div class="flex items-center gap-4">
+                      <span class="text-xl font-black w-16">${medal}</span>
+                      <div>
+                        <div class="text-lg font-extrabold text-white">${escapeHtml(r.nickname)}</div>
+                        <div class="text-xs text-slate-400">현금 ${r.cash.toLocaleString()}원 · 주식평가 ${r.stockValue.toLocaleString()}원 · 매매 ${r.tradeCount}회</div>
+                      </div>
+                    </div>
+                    <div class="text-right">
+                      <div class="text-2xl font-mono font-black text-white">${r.totalAsset.toLocaleString()}원</div>
+                      <div class="text-sm font-mono font-bold ${pctColor}">${sign}${r.returnPct}%</div>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // TRADING / MARKET_CLOSE 시세판 + 브리핑/정산
+      board.innerHTML = `
+        <div class="panel rounded-3xl p-6 space-y-4">
+          <h2 class="text-lg font-bold text-white">📈 실시간 전광판 시세</h2>
+          <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+            ${st.stocks.map((s) => {
+              const up = s.pctChange > 0;
+              const down = s.pctChange < 0;
+              const color = up ? 'text-rose-400' : down ? 'text-sky-400' : 'text-slate-400';
+              const arrow = up ? '▲' : down ? '▼' : '-';
+              return `
+                <div class="p-4 rounded-2xl bg-slate-900/90 border border-slate-800 space-y-1">
+                  <div class="text-xs text-slate-400">${s.sector}</div>
+                  <div class="text-base font-extrabold text-white">${s.emoji} ${s.name}</div>
+                  <div class="flex items-baseline justify-between pt-1">
+                    <span class="font-mono text-lg font-black text-amber-300">${s.price.toLocaleString()}원</span>
+                    <span class="font-mono text-sm font-bold ${color}">${arrow} ${up ? '+' : ''}${s.pctChange}% </span>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+
+        ${st.phase === 'TRADING' ? `
+          <div class="panel rounded-3xl p-6 space-y-3">
+            <h2 class="text-lg font-bold text-amber-300">📰 ${st.round}라운드 시장 브리핑 (8개 정보)</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              ${st.briefings.map((b) => `
+                <div class="p-4 rounded-2xl ${b.isHidden ? 'bg-purple-950/40 border-purple-500/50' : 'bg-slate-900/90 border-slate-800'} border space-y-1.5">
+                  <div class="font-bold text-sm ${b.isHidden ? 'text-purple-300' : 'text-white'}">${escapeHtml(b.title)}</div>
+                  <p class="text-xs ${b.isHidden ? 'text-purple-200/80' : 'text-slate-300'} leading-relaxed">${escapeHtml(b.summary)}</p>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : `
+          <div class="panel rounded-3xl p-6 space-y-4">
+            <h2 class="text-lg font-bold text-emerald-400">🔔 ${st.round}라운드 장 마감 결과</h2>
+            <div class="space-y-2">
+              ${st.roundSummaryLogs.map((l) => `
+                <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 text-sm text-slate-100">${escapeHtml(l)}</div>
+              `).join('')}
+            </div>
+            <div class="pt-4 border-t border-slate-800 space-y-3">
+              <div class="flex items-center justify-between">
+                <h3 class="text-base font-bold text-amber-300">🏅 ${st.round}라운드 중간 순위</h3>
+                <span class="text-xs text-slate-400">${showRankAmounts ? '방장 금액 공개 ON (총자산 · 수익률)' : '자산 총액 비공개 · 닉네임 순위만 공개'}</span>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                ${st.rankings.map((r) => {
+                  const medal = r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `${r.rank}위`;
+                  const hasAmt = showRankAmounts && typeof r.totalAsset === 'number';
+                  const sign = r.returnPct > 0 ? '+' : '';
+                  const pctColor = r.returnPct > 0 ? 'text-rose-400' : r.returnPct < 0 ? 'text-sky-400' : 'text-slate-400';
+                  return `
+                    <div class="px-4 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-2 text-sm">
+                      <div class="flex items-center gap-2.5 min-w-0">
+                        <span class="font-extrabold text-amber-300 shrink-0">${medal}</span>
+                        <span class="font-bold text-white truncate">${escapeHtml(r.nickname)}</span>
+                      </div>
+                      ${hasAmt ? `<div class="text-right shrink-0 font-mono text-xs"><span class="font-bold text-amber-300">${r.totalAsset.toLocaleString()}원</span> <span class="${pctColor}">(${sign}${r.returnPct}%)</span></div>` : ''}
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+        `}
+      `;
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>
